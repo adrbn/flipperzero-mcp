@@ -58,6 +58,14 @@ export FLIPPER_WIFI_PORT=8080
 flipper-mcp
 ```
 
+### WiFi transport note (important)
+
+The `wifi` transport in this repo expects a **raw TCP socket bridge** that carries Flipper **Protobuf RPC** bytes over the network.
+If your WiFi devboard firmware only provides a **web UI** (often the stock “Blackmagic” firmware), you may be able to browse it at `blackmagic.local`,
+but this repo will **not** be able to run Protobuf RPC over WiFi until you flash (or build) bridge firmware that exposes the TCP byte-stream (e.g. on port 8080).
+
+See `docs/wifi_remote_control.md`.
+
 ## Using with Claude Desktop
 
 See `docs/claude_setup.md`.
