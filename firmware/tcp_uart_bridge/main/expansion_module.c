@@ -14,6 +14,8 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 
+#include "bridge_stats.h"
+
 static const char *TAG = "expansion";
 
 #define UART_NUM        UART_NUM_1
@@ -32,6 +34,9 @@ static TaskHandle_t s_rx_task = NULL;
 /* RX buffer for frame assembly */
 static uint8_t s_rx_buf[RX_BUF_SIZE];
 static size_t s_rx_len = 0;
+
+/* Watchdog: last time we received any valid bytes/frame from Flipper */
+static TickType_t s_last_rx_tick = 0;
 
 /* Calculate XOR checksum */
 static uint8_t calc_checksum(const uint8_t *data, size_t len) {
@@ -55,6 +60,7 @@ static esp_err_t send_frame(const uint8_t *frame, size_t len) {
     uart_wait_tx_done(UART_NUM, pdMS_TO_TICKS(100));
 
     ESP_LOGD(TAG, "TX frame type=0x%02x len=%d", frame[0], (int)len);
+    bridge_stats_inc_exp_tx_frames(1);
     return ESP_OK;
 }
 
@@ -96,8 +102,13 @@ static esp_err_t send_data_frame(const uint8_t *data, size_t len) {
     uint8_t frame[2 + EXP_DATA_MAX_PAYLOAD];
     frame[0] = EXP_FRAME_DATA;
     frame[1] = (uint8_t)len;
-    memcpy(&frame[2], data, len);
+    if (len) memcpy(&frame[2], data, len);
 
+    /*
+     * On-wire framing for DATA uses a length byte followed by that many payload bytes
+     * (up to EXP_DATA_MAX_PAYLOAD). The struct in docs defines the maximum size, but
+     * frames are transmitted in their minimal form: type + size + payload + checksum.
+     */
     return send_frame(frame, 2 + len);
 }
 
@@ -180,7 +191,12 @@ static int get_frame_size(uint8_t frame_type, const uint8_t *data, size_t availa
             return 3;  /* type + command + checksum */
         case EXP_FRAME_DATA:
             if (available >= 2) {
-                return 2 + data[1] + 1;  /* type + size + data + checksum */
+                /* type + size + payload(size) + checksum */
+                uint8_t payload_len = data[1];
+                if (payload_len > EXP_DATA_MAX_PAYLOAD) {
+                    return -2; /* Invalid length */
+                }
+                return 2 + payload_len + 1;
             }
             return -1;  /* Need more data */
         default:
@@ -192,11 +208,16 @@ static int get_frame_size(uint8_t frame_type, const uint8_t *data, size_t availa
 static void process_frame(const uint8_t *frame, size_t len) {
     if (len < 2) return;
 
+    s_last_rx_tick = xTaskGetTickCount();
+    bridge_stats_inc_exp_rx_frames(1);
+    bridge_stats_set_exp_last_frame_type(frame[0]);
+
     /* Verify checksum */
     uint8_t expected = calc_checksum(frame, len - 1);
     uint8_t received = frame[len - 1];
     if (expected != received) {
         ESP_LOGW(TAG, "Checksum mismatch: expected 0x%02x, got 0x%02x", expected, received);
+        bridge_stats_inc_exp_checksum_failures(1);
         s_state = EXP_STATE_ERROR;
         return;
     }
@@ -217,6 +238,7 @@ static void process_frame(const uint8_t *frame, size_t len) {
         case EXP_STATE_BAUD_NEGOTIATION:
             if (frame_type == EXP_FRAME_STATUS) {
                 uint8_t status = frame[1];
+                bridge_stats_set_exp_last_status(status);
                 if (status == EXP_STATUS_OK) {
                     ESP_LOGI(TAG, "Baud rate accepted, switching");
                     vTaskDelay(pdMS_TO_TICKS(EXP_BAUD_SWITCH_DEAD_MS));
@@ -241,6 +263,7 @@ static void process_frame(const uint8_t *frame, size_t len) {
         case EXP_STATE_RPC_STARTING:
             if (frame_type == EXP_FRAME_STATUS) {
                 uint8_t status = frame[1];
+                bridge_stats_set_exp_last_status(status);
                 if (status == EXP_STATUS_OK) {
                     ESP_LOGI(TAG, "RPC session started!");
                     s_state = EXP_STATE_RPC_ACTIVE;
@@ -256,15 +279,19 @@ static void process_frame(const uint8_t *frame, size_t len) {
                 /* Extract RPC payload */
                 uint8_t payload_len = frame[1];
                 if (payload_len > 0 && s_rpc_callback) {
+                    bridge_stats_inc_exp_rx_data_bytes(payload_len);
                     s_rpc_callback(&frame[2], payload_len);
                 }
                 /* ACK with STATUS OK */
                 send_status(EXP_STATUS_OK);
             } else if (frame_type == EXP_FRAME_STATUS) {
                 /* ACK for our sent data, ignore */
+                bridge_stats_set_exp_last_status(frame[1]);
             } else if (frame_type == EXP_FRAME_HEARTBEAT) {
                 /* Respond to heartbeat to maintain connection */
                 expansion_send_heartbeat();
+            } else {
+                bridge_stats_inc_exp_unknown_frames(1);
             }
             break;
 
@@ -310,6 +337,17 @@ static void uart_rx_task(void *arg) {
                     /* Need more data */
                     break;
                 }
+            }
+        }
+
+        /* RX watchdog: if we stop receiving frames for too long, force a reconnect. */
+        if (s_state != EXP_STATE_DISCONNECTED) {
+            TickType_t now = xTaskGetTickCount();
+            if (s_last_rx_tick != 0 && (now - s_last_rx_tick) > pdMS_TO_TICKS(1500)) {
+                ESP_LOGW(TAG, "No RX from Flipper for >1500ms; marking error for reconnect");
+                s_state = EXP_STATE_ERROR;
+                s_rx_len = 0;
+                s_last_rx_tick = now;
             }
         }
 
@@ -368,6 +406,7 @@ esp_err_t expansion_connect(void) {
     /* Reset to initial baud */
     set_baud_rate(EXP_INITIAL_BAUD);
     s_rx_len = 0;
+    s_last_rx_tick = xTaskGetTickCount();
 
     /* Signal presence to Flipper */
     s_state = EXP_STATE_AWAITING_HEARTBEAT;
@@ -390,6 +429,7 @@ esp_err_t expansion_send_rpc(const uint8_t *data, size_t len) {
             chunk = EXP_DATA_MAX_PAYLOAD;
         }
 
+        bridge_stats_inc_exp_tx_data_bytes(chunk);
         esp_err_t err = send_data_frame(data + offset, chunk);
         if (err != ESP_OK) return err;
 

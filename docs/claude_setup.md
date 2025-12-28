@@ -206,10 +206,11 @@ export FLIPPER_PORT=/dev/ttyACM0
 
 Notes:
 
-- The current CLI implementation only wires `FLIPPER_TRANSPORT` and `FLIPPER_PORT` into the runtime configuration (`src/flipper_mcp/core/server.py`). If you need deeper configuration (WiFi host/port, Bluetooth address), update the `config` dict in `flipper_mcp.core.server.main()` or add CLI/config-file support.
+- The current CLI implementation wires `FLIPPER_TRANSPORT`, `FLIPPER_PORT`, and (for WiFi) `FLIPPER_WIFI_HOST`/`FLIPPER_WIFI_PORT` into the runtime configuration (`src/flipper_mcp/core/server.py`).
+- If you need deeper configuration (Bluetooth address, module-specific config), update the `config` dict in `flipper_mcp.core.server.main()` or add CLI/config-file support.
 - Additional RPC debugging controls:
   - `FLIPPER_DEBUG`: enable protobuf RPC debug logs (`1`, `true`, `yes`, `on`)
-  - `FLIPPER_FORCE_START_RPC_SESSION`: always send `start_rpc_session` on connect (`1`, `true`, `yes`, `on`)
+  - `FLIPPER_FORCE_START_RPC_SESSION`: **USB-only**. Force sending `start_rpc_session` on connect (`1`, `true`, `yes`, `on`). Ignored for `wifi`.
 
 ## Verifying the Setup
 

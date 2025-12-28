@@ -242,11 +242,16 @@ class FlipperClient:
         rpc_responsive = False
         rpc_echo: Optional[str] = None
         if probe_rpc and transport_connected and self.rpc:
+            # Keep this probe short and stable. Some firmwares/bridges can be a bit
+            # flaky on the very first request after connect; retry once.
+            probe_payload = b"mcp"
             try:
-                echoed = await self.rpc.protobuf_ping(b"mcp_health")
-                if echoed == b"mcp_health":
+                echoed = await self.rpc.protobuf_ping(probe_payload)
+                if echoed != probe_payload:
+                    echoed = await self.rpc.protobuf_ping(probe_payload)
+                if echoed == probe_payload:
                     rpc_responsive = True
-                    rpc_echo = "mcp_health"
+                    rpc_echo = probe_payload.decode("ascii", errors="ignore")
             except Exception as e:
                 last_error = last_error or str(e)
 

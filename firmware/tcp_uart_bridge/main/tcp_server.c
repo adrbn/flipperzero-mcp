@@ -19,6 +19,8 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
+#include "bridge_stats.h"
+
 static const char *TAG = "tcp_server";
 
 #define RX_BUFFER_SIZE 2048
@@ -119,6 +121,7 @@ static void accept_task(void *arg) {
         char addr_str[INET_ADDRSTRLEN];
         inet_ntoa_r(client_addr.sin_addr, addr_str, sizeof(addr_str));
         ESP_LOGI(TAG, "Client connected from %s:%d", addr_str, ntohs(client_addr.sin_port));
+        bridge_stats_inc_tcp_clients_accepted(1);
 
         /* Close existing client if any (RX task will exit on socket close). */
         xSemaphoreTake(s_client_mutex, portMAX_DELAY);
@@ -208,6 +211,8 @@ static void rx_task(void *arg) {
         }
 
         ESP_LOGD(TAG, "Received %d bytes from TCP", len);
+        bridge_stats_inc_tcp_rx_packets(1);
+        bridge_stats_inc_tcp_rx((size_t)len);
 
         /* Forward to callback */
         if (s_rx_callback) {
@@ -229,6 +234,7 @@ static void rx_task(void *arg) {
     }
     xSemaphoreGive(s_client_mutex);
 
+    bridge_stats_inc_tcp_clients_closed(1);
     ESP_LOGI(TAG, "RX task exiting");
     vTaskDelete(NULL);
 }
@@ -254,6 +260,8 @@ int tcp_server_send(const uint8_t *data, size_t len) {
     }
 
     ESP_LOGD(TAG, "Sent %d bytes to TCP client", sent);
+    bridge_stats_inc_tcp_tx_packets(1);
+    bridge_stats_inc_tcp_tx((size_t)sent);
     return sent;
 }
 

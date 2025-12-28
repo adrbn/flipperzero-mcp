@@ -18,8 +18,10 @@ The default server entry point (`flipper_mcp.core.server.main`) reads:
 
 - `FLIPPER_TRANSPORT`: transport type (`usb` default, `wifi`, `bluetooth`/`ble`)
 - `FLIPPER_PORT`: override USB serial device path (only used when `FLIPPER_TRANSPORT=usb`)
+- `FLIPPER_WIFI_HOST`: WiFi bridge host/IP (only used when `FLIPPER_TRANSPORT=wifi`)
+- `FLIPPER_WIFI_PORT`: WiFi bridge TCP port (only used when `FLIPPER_TRANSPORT=wifi`, default 8080)
 - `FLIPPER_DEBUG`: enable protobuf RPC debug logs (`1`, `true`, `yes`, `on`)
-- `FLIPPER_FORCE_START_RPC_SESSION`: always send the CLI command `start_rpc_session` before protobuf RPC (`1`, `true`, `yes`, `on`)
+- `FLIPPER_FORCE_START_RPC_SESSION`: **USB-only**. Force sending the CLI command `start_rpc_session` before protobuf RPC (`1`, `true`, `yes`, `on`). Ignored for `wifi`.
 
 ## Core API
 

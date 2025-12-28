@@ -90,7 +90,7 @@ Build-time options in `Kconfig.projbuild`:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `BRIDGE_TCP_PORT` | 8080 | TCP server port |
-| `BRIDGE_UART_BAUD_RATE` | 115200 | UART baud rate |
+| `BRIDGE_UART_BAUD_RATE` | 230400 | Target baud rate after Expansion negotiation |
 | `BRIDGE_UART_TX_PIN` | 43 | ESP32 TX GPIO |
 | `BRIDGE_UART_RX_PIN` | 44 | ESP32 RX GPIO |
 | `BRIDGE_AP_SSID` | FlipperBridge | Captive portal AP name |

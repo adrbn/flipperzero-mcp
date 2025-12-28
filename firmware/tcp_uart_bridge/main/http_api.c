@@ -7,6 +7,7 @@
 
 #include "http_api.h"
 #include "expansion_module.h"
+#include "bridge_stats.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -94,6 +95,65 @@ static esp_err_t status_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+/* GET /api/debug/counters - low-level counters for debugging the bridge */
+static esp_err_t debug_counters_handler(httpd_req_t *req) {
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+
+    bridge_counters_t c;
+    bridge_stats_snapshot(&c);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "flipper_connected", expansion_is_connected());
+    cJSON_AddStringToObject(resp, "connection_state", "see /api/health for state string");
+
+    cJSON *tcp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(tcp, "rx_bytes", c.tcp_rx_bytes);
+    cJSON_AddNumberToObject(tcp, "tx_bytes", c.tcp_tx_bytes);
+    cJSON_AddNumberToObject(tcp, "rx_packets", c.tcp_rx_packets);
+    cJSON_AddNumberToObject(tcp, "tx_packets", c.tcp_tx_packets);
+    cJSON_AddNumberToObject(tcp, "clients_accepted", c.tcp_clients_accepted);
+    cJSON_AddNumberToObject(tcp, "clients_closed", c.tcp_clients_closed);
+    cJSON_AddItemToObject(resp, "tcp", tcp);
+
+    cJSON *exp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(exp, "tx_frames", c.exp_tx_frames);
+    cJSON_AddNumberToObject(exp, "rx_frames", c.exp_rx_frames);
+    cJSON_AddNumberToObject(exp, "tx_data_bytes", c.exp_tx_data_bytes);
+    cJSON_AddNumberToObject(exp, "rx_data_bytes", c.exp_rx_data_bytes);
+    cJSON_AddNumberToObject(exp, "checksum_failures", c.exp_checksum_failures);
+    cJSON_AddNumberToObject(exp, "unknown_frames", c.exp_unknown_frames);
+    cJSON_AddNumberToObject(exp, "last_status", c.exp_last_status);
+    cJSON_AddNumberToObject(exp, "last_frame_type", c.exp_last_frame_type);
+    cJSON_AddItemToObject(resp, "expansion", exp);
+
+    char *json = cJSON_PrintUnformatted(resp);
+    httpd_resp_sendstr(req, json);
+
+    free(json);
+    cJSON_Delete(resp);
+    return ESP_OK;
+}
+
+/* POST /api/debug/reconnect - force reconnect to Flipper Expansion RPC */
+static esp_err_t debug_reconnect_handler(httpd_req_t *req) {
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "application/json");
+
+    expansion_disconnect();
+    // best-effort immediate reconnect; the main task will also keep retrying
+    (void)expansion_connect();
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "success", true);
+    cJSON_AddStringToObject(resp, "message", "Reconnect requested");
+    char *json = cJSON_PrintUnformatted(resp);
+    httpd_resp_sendstr(req, json);
+    free(json);
+    cJSON_Delete(resp);
+    return ESP_OK;
+}
+
 /* Placeholder for future RPC-based endpoints */
 static esp_err_t not_implemented_handler(httpd_req_t *req) {
     set_cors_headers(req);
@@ -132,6 +192,8 @@ esp_err_t http_api_init(uint16_t port) {
     /* Register URI handlers */
     httpd_uri_t health = {.uri = "/api/health", .method = HTTP_GET, .handler = health_handler};
     httpd_uri_t status = {.uri = "/api/status", .method = HTTP_GET, .handler = status_handler};
+    httpd_uri_t debug = {.uri = "/api/debug/counters", .method = HTTP_GET, .handler = debug_counters_handler};
+    httpd_uri_t debug_reconnect = {.uri = "/api/debug/reconnect", .method = HTTP_POST, .handler = debug_reconnect_handler};
 
     /* Placeholder endpoints - will be implemented with Protobuf RPC */
     httpd_uri_t device = {.uri = "/api/device/info", .method = HTTP_GET, .handler = not_implemented_handler};
@@ -148,6 +210,8 @@ esp_err_t http_api_init(uint16_t port) {
 
     httpd_register_uri_handler(s_server, &health);
     httpd_register_uri_handler(s_server, &status);
+    httpd_register_uri_handler(s_server, &debug);
+    httpd_register_uri_handler(s_server, &debug_reconnect);
     httpd_register_uri_handler(s_server, &device);
     httpd_register_uri_handler(s_server, &list);
     httpd_register_uri_handler(s_server, &read_f);

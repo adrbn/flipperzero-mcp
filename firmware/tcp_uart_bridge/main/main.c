@@ -10,7 +10,7 @@
  * Features:
  *   - Web-based captive portal for WiFi configuration
  *   - Expansion Module Protocol for Flipper communication
- *   - HTTP REST API for remote control
+ *   - HTTP API for health/status/debug (no RPC translation yet)
  *   - LED status indication
  */
 
