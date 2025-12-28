@@ -41,7 +41,8 @@ If you’re willing to flash the devboard, the simplest approach is a tiny ESP32
 
 - a TCP listener on `0.0.0.0:8080`
 - a UART connection to the Flipper devboard pins
-- a bidirectional forwarder between TCP and UART
+- an **Expansion Module Protocol** handshake to enter `rpc_active`
+- a bidirectional forwarder between TCP and the Expansion RPC data channel
 
 This repo includes a scaffold under `firmware/tcp_uart_bridge/` you can use as a starting point.
 

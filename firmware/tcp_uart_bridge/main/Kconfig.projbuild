@@ -8,9 +8,9 @@ menu "TCP-UART Bridge Configuration"
 
     config BRIDGE_UART_BAUD_RATE
         int "UART Baud Rate"
-        default 115200
+        default 230400
         help
-            Baud rate for UART communication with Flipper Zero.
+            Target baud rate for Flipper Expansion Protocol after negotiation.
 
     config BRIDGE_UART_TX_PIN
         int "UART TX GPIO Pin"

@@ -27,15 +27,16 @@
 #include "tcp_server.h"
 #include "expansion_module.h"
 #include "http_api.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "main";
 
 /* LED pin for status indication */
 #define STATUS_LED_PIN GPIO_NUM_15
 
-/* UART pins for Flipper connection */
-#define FLIPPER_TX_PIN  43  /* ESP32 TX -> Flipper RX (pin 14) */
-#define FLIPPER_RX_PIN  44  /* ESP32 RX <- Flipper TX (pin 13) */
+/* UART pins for Flipper connection (configurable via menuconfig) */
+#define FLIPPER_TX_PIN  CONFIG_BRIDGE_UART_TX_PIN  /* ESP32 TX -> Flipper RX (pin 14) */
+#define FLIPPER_RX_PIN  CONFIG_BRIDGE_UART_RX_PIN  /* ESP32 RX <- Flipper TX (pin 13) */
 
 /**
  * Callback: RPC data received from Flipper
@@ -174,8 +175,8 @@ void app_main(void) {
     }
 
     /* Initialize TCP server (for raw Protobuf RPC forwarding) */
-    ESP_LOGI(TAG, "Starting TCP server on port 8080...");
-    err = tcp_server_init(8080, on_tcp_rx);
+    ESP_LOGI(TAG, "Starting TCP server on port %d...", CONFIG_BRIDGE_TCP_PORT);
+    err = tcp_server_init(CONFIG_BRIDGE_TCP_PORT, on_tcp_rx);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "TCP server init failed: %s", esp_err_to_name(err));
         return;
@@ -192,7 +193,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "==========================================");
     ESP_LOGI(TAG, "Bridge ready!");
     ESP_LOGI(TAG, "HTTP: http://%s/api/health", ip_str);
-    ESP_LOGI(TAG, "TCP:  %s:8080 (Protobuf RPC)", ip_str);
+    ESP_LOGI(TAG, "TCP:  %s:%d (Protobuf RPC)", ip_str, CONFIG_BRIDGE_TCP_PORT);
     ESP_LOGI(TAG, "==========================================");
     ESP_LOGI(TAG, "Make sure Flipper has Expansion Modules enabled!");
     ESP_LOGI(TAG, "  Settings -> Expansion Modules -> USART");

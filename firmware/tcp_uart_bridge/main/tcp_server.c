@@ -33,6 +33,12 @@ static TaskHandle_t s_accept_task = NULL;
 static TaskHandle_t s_rx_task = NULL;
 static SemaphoreHandle_t s_client_mutex = NULL;
 static volatile bool s_running = false;
+static volatile uint32_t s_client_generation = 0;
+
+typedef struct {
+    int sock;
+    uint32_t gen;
+} rx_task_args_t;
 
 /* Forward declarations */
 static void accept_task(void *arg);
@@ -114,18 +120,16 @@ static void accept_task(void *arg) {
         inet_ntoa_r(client_addr.sin_addr, addr_str, sizeof(addr_str));
         ESP_LOGI(TAG, "Client connected from %s:%d", addr_str, ntohs(client_addr.sin_port));
 
-        /* Close existing client if any */
+        /* Close existing client if any (RX task will exit on socket close). */
         xSemaphoreTake(s_client_mutex, portMAX_DELAY);
         if (s_client_sock >= 0) {
             ESP_LOGI(TAG, "Closing previous client connection");
             close(s_client_sock);
             s_client_sock = -1;
-            if (s_rx_task != NULL) {
-                vTaskDelete(s_rx_task);
-                s_rx_task = NULL;
-            }
         }
         s_client_sock = new_sock;
+        s_client_generation++;
+        uint32_t gen = s_client_generation;
         xSemaphoreGive(s_client_mutex);
 
         /* Set socket options for low latency */
@@ -137,7 +141,41 @@ static void accept_task(void *arg) {
         setsockopt(new_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
         /* Start RX task for this client */
-        xTaskCreate(rx_task, "tcp_rx", RX_TASK_STACK_SIZE, NULL, 6, &s_rx_task);
+        rx_task_args_t *args = (rx_task_args_t *)malloc(sizeof(rx_task_args_t));
+        if (!args) {
+            ESP_LOGE(TAG, "Out of memory creating RX task args; closing client");
+            xSemaphoreTake(s_client_mutex, portMAX_DELAY);
+            if (s_client_sock == new_sock) {
+                close(s_client_sock);
+                s_client_sock = -1;
+            } else {
+                close(new_sock);
+            }
+            xSemaphoreGive(s_client_mutex);
+            continue;
+        }
+        args->sock = new_sock;
+        args->gen = gen;
+
+        TaskHandle_t task = NULL;
+        BaseType_t ok = xTaskCreate(rx_task, "tcp_rx", RX_TASK_STACK_SIZE, args, 6, &task);
+        if (ok != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create RX task; closing client");
+            free(args);
+            xSemaphoreTake(s_client_mutex, portMAX_DELAY);
+            if (s_client_sock == new_sock) {
+                close(s_client_sock);
+                s_client_sock = -1;
+            } else {
+                close(new_sock);
+            }
+            xSemaphoreGive(s_client_mutex);
+            continue;
+        }
+
+        xSemaphoreTake(s_client_mutex, portMAX_DELAY);
+        s_rx_task = task;
+        xSemaphoreGive(s_client_mutex);
     }
 
     ESP_LOGI(TAG, "Accept task exiting");
@@ -145,12 +183,17 @@ static void accept_task(void *arg) {
 }
 
 static void rx_task(void *arg) {
+    rx_task_args_t *args = (rx_task_args_t *)arg;
+    const int sock = args ? args->sock : -1;
+    const uint32_t gen = args ? args->gen : 0;
+    free(args);
+
     uint8_t rx_buffer[RX_BUFFER_SIZE];
 
     ESP_LOGI(TAG, "RX task started");
 
-    while (s_running && s_client_sock >= 0) {
-        int len = recv(s_client_sock, rx_buffer, sizeof(rx_buffer), 0);
+    while (s_running && sock >= 0) {
+        int len = recv(sock, rx_buffer, sizeof(rx_buffer), 0);
 
         if (len < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -172,13 +215,18 @@ static void rx_task(void *arg) {
         }
     }
 
-    /* Clean up client socket */
+    /* Clean up: close our socket, and clear global only if we are still current. */
     xSemaphoreTake(s_client_mutex, portMAX_DELAY);
-    if (s_client_sock >= 0) {
+    if (s_client_sock == sock && s_client_generation == gen) {
         close(s_client_sock);
         s_client_sock = -1;
+    } else {
+        /* Socket may already be closed/replaced; close our handle defensively. */
+        close(sock);
     }
-    s_rx_task = NULL;
+    if (s_rx_task == xTaskGetCurrentTaskHandle()) {
+        s_rx_task = NULL;
+    }
     xSemaphoreGive(s_client_mutex);
 
     ESP_LOGI(TAG, "RX task exiting");

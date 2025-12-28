@@ -5,6 +5,7 @@
 #include "expansion_module.h"
 
 #include <string.h>
+#include "sdkconfig.h"
 #include "esp_log.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
@@ -112,13 +113,32 @@ static esp_err_t set_baud_rate(uint32_t baud) {
 
 /* Pull TX pin low to signal presence to Flipper (pulls Flipper's RX low) */
 static void signal_presence(void) {
-    /* Temporarily reconfigure TX as GPIO output, pull low, then restore UART */
-    uart_driver_delete(UART_NUM);
+    /*
+     * IMPORTANT:
+     * We must not tear down/reinstall the UART driver while the RX task is
+     * executing uart_read_bytes(). That can lead to undefined behavior.
+     *
+     * We suspend the RX task briefly, uninstall the driver, pulse TX low,
+     * then re-install and resume. This keeps the driver/task lifecycle coherent.
+     */
+    if (s_mutex) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+    }
+
+    if (s_rx_task) {
+        vTaskSuspend(s_rx_task);
+    }
+
+    /* Best-effort wait for TX FIFO to drain before we reconfigure pins. */
+    (void)uart_wait_tx_done(UART_NUM, pdMS_TO_TICKS(50));
+
+    /* Temporarily reconfigure TX as GPIO output, pulse low, then restore UART. */
+    (void)uart_driver_delete(UART_NUM);
 
     gpio_reset_pin(s_tx_pin);
     gpio_set_direction(s_tx_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(s_tx_pin, 0);
-    vTaskDelay(pdMS_TO_TICKS(1));  /* Brief low pulse */
+    vTaskDelay(pdMS_TO_TICKS(2));  /* Brief low pulse */
     gpio_set_level(s_tx_pin, 1);
     gpio_reset_pin(s_tx_pin);
 
@@ -132,11 +152,19 @@ static void signal_presence(void) {
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    uart_driver_install(UART_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM, &uart_config);
-    uart_set_pin(UART_NUM, s_tx_pin, s_rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    (void)uart_driver_install(UART_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0);
+    (void)uart_param_config(UART_NUM, &uart_config);
+    (void)uart_set_pin(UART_NUM, s_tx_pin, s_rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
-    ESP_LOGI(TAG, "Signaled presence to Flipper");
+    if (s_rx_task) {
+        vTaskResume(s_rx_task);
+    }
+
+    if (s_mutex) {
+        xSemaphoreGive(s_mutex);
+    }
+
+    ESP_LOGI(TAG, "Signaled presence to Flipper (safe)");
 }
 
 /* Get expected frame size based on type and content */

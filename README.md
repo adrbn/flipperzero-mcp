@@ -40,7 +40,7 @@ The CLI currently uses environment variables for configuration:
 - `FLIPPER_WIFI_HOST`: Flipper WiFi dev board host/IP (only used for `wifi`)
 - `FLIPPER_WIFI_PORT`: Flipper WiFi dev board TCP port (only used for `wifi`)
 - `FLIPPER_DEBUG`: enable protobuf RPC debug logging (`1`, `true`, `yes`, `on`)
-- `FLIPPER_FORCE_START_RPC_SESSION`: force sending `start_rpc_session` on connect (`1`, `true`, `yes`, `on`)
+- `FLIPPER_FORCE_START_RPC_SESSION`: **USB-only**. Force sending `start_rpc_session` on connect (`1`, `true`, `yes`, `on`). Ignored for `wifi`.
 - `FLIPPER_MCP_ALLOW_STUB_MODE`: **DEV ONLY**. If enabled (`1`, `true`, `yes`, `on`), the server will run in stub mode when it cannot connect to hardware. Default: disabled.
 
 Examples:

@@ -8,6 +8,7 @@ Uses generated protobuf code from proto/ directory.
 """
 
 import os
+import asyncio
 from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from .transport.base import FlipperTransport
 
@@ -135,6 +136,16 @@ class ProtobufRPC:
             self._rpc_session_started = True
             return
 
+        # WiFi bridge is expected to already be in RPC mode (Expansion protocol handles it).
+        # Never send CLI `start_rpc_session` over a raw TCP bridge.
+        try:
+            transport_name = (self.transport.get_name() or "").lower()
+        except Exception:
+            transport_name = ""
+        if transport_name == "wifi":
+            self._rpc_session_started = True
+            return
+
         async def drain_host_rx(max_seconds: float = 0.6) -> None:
             """
             Drain any pending device->host bytes (CLI banner/prompt/echo).
@@ -151,7 +162,7 @@ class ProtobufRPC:
                     if not chunk:
                         # Keep draining until the deadline to avoid stopping in the middle
                         # of a multi-chunk CLI banner/echo.
-                        time.sleep(0.01)
+                        await asyncio.sleep(0.01)
                         continue
             except Exception:
                 pass
@@ -164,7 +175,6 @@ class ProtobufRPC:
 
         # Give the device a moment to finish emitting the CLI banner/prompt after opening the port.
         try:
-            import asyncio
             await asyncio.sleep(0.3)
         except Exception:
             pass

@@ -107,9 +107,10 @@ idf.py menuconfig
 
 | Pattern | Meaning |
 |---------|---------|
-| Fast blink (5Hz) | Not connected to WiFi (captive portal active) |
-| Slow blink (1Hz) | WiFi connected, waiting for TCP client |
-| Solid on | Fully connected and bridging |
+| Fast blink | Not connected to WiFi (captive portal active) |
+| Medium blink | WiFi connected, connecting to Flipper (Expansion Protocol) |
+| Slow blink | Flipper connected, waiting for TCP client |
+| Solid on | WiFi + Flipper + TCP client connected (bridging active) |
 
 ## Troubleshooting
 
@@ -124,7 +125,7 @@ idf.py menuconfig
 - Check baud rate matches (default: 115200)
 
 ### Reset WiFi credentials
-Hold the BOOT button on the dev board for 5 seconds during startup to clear stored credentials and restart the captive portal.
+Clear stored credentials via code (call `wifi_manager_reset_credentials()`), or erase NVS by reflashing/erasing flash as part of your ESP-IDF workflow.
 
 ## Technical Details
 

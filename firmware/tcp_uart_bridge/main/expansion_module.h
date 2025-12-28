@@ -10,6 +10,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -36,7 +37,8 @@
 #define EXP_TIMEOUT_MS          250
 #define EXP_BAUD_SWITCH_DEAD_MS 25
 #define EXP_INITIAL_BAUD        9600
-#define EXP_TARGET_BAUD         230400
+/* Target baud rate after negotiation (configurable via menuconfig). */
+#define EXP_TARGET_BAUD         CONFIG_BRIDGE_UART_BAUD_RATE
 
 /* Data frame limits */
 #define EXP_DATA_MAX_PAYLOAD    64

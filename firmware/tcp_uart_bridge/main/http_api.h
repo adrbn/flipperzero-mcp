@@ -4,20 +4,17 @@
 #include "esp_http_server.h"
 
 /**
- * HTTP API for Flipper CLI Bridge
+ * HTTP API for Flipper WiFi Bridge
  *
- * REST API that translates HTTP requests to Flipper CLI commands over UART.
+ * Provides bridge status endpoints. RPC translation endpoints are placeholders.
  *
  * Endpoints:
  *   GET  /api/health              - Bridge health check
- *   GET  /api/device/info         - Get device info (device_info CLI)
- *   GET  /api/storage/list        - List directory (?path=/ext/badusb)
- *   GET  /api/storage/read        - Read file (?path=/ext/file.txt)
- *   POST /api/storage/write       - Write file {path, content}
- *   POST /api/storage/delete      - Delete file {path}
- *   POST /api/storage/mkdir       - Create directory {path}
- *   POST /api/app/start           - Start app {name, args}
- *   POST /api/cli/command         - Send raw CLI command {command}
+ *   GET  /api/status              - Detailed bridge status
+ *
+ * NOTE:
+ * This firmware currently exposes raw Protobuf RPC over TCP (default 8080).
+ * The HTTP endpoints for translating requests into Protobuf RPC are not yet implemented.
  */
 
 /**
