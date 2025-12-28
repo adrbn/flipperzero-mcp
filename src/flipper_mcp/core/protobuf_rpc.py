@@ -127,6 +127,14 @@ class ProtobufRPC:
         if self._rpc_session_started:
             return
 
+        # For transports with pre-established RPC sessions (e.g., WiFi via Expansion Module Protocol),
+        # skip the CLI-based session initialization entirely.
+        if getattr(self.transport, 'rpc_session_preestablished', False):
+            if self.debug:
+                print("[protobuf] Transport has pre-established RPC session, skipping CLI init")
+            self._rpc_session_started = True
+            return
+
         async def drain_host_rx(max_seconds: float = 0.6) -> None:
             """
             Drain any pending device->host bytes (CLI banner/prompt/echo).

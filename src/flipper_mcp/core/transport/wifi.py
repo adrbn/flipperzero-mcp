@@ -1,6 +1,7 @@
 """WiFi transport for Flipper Zero (ESP32 WiFi Dev Board)."""
 
 import asyncio
+import os
 from typing import Optional
 
 from .base import FlipperTransport
@@ -9,20 +10,26 @@ from .base import FlipperTransport
 class WiFiTransport(FlipperTransport):
     """
     WiFi transport implementation for ESP32 WiFi Dev Board.
-    
+
     Connects to Flipper Zero via network socket.
+    The ESP32 handles the Expansion Module Protocol handshake,
+    so the RPC session is pre-established by the time we connect.
     """
-    
+
+    # RPC session is already established by ESP32 via Expansion Module Protocol
+    rpc_session_preestablished = True
+
     def __init__(self, config: dict):
         """
         Initialize WiFi transport.
-        
+
         Args:
             config: WiFi configuration with 'host' and 'port'
+                   Can also be set via FLIPPER_WIFI_HOST and FLIPPER_WIFI_PORT env vars
         """
         super().__init__(config)
-        self.host = config.get("host", "192.168.1.1")
-        self.port = config.get("port", 8080)
+        self.host = os.environ.get("FLIPPER_WIFI_HOST") or config.get("host", "192.168.5.94")
+        self.port = int(os.environ.get("FLIPPER_WIFI_PORT", 0) or config.get("port", 8080))
         # Connection/read tuning
         self.connect_timeout = float(config.get("connect_timeout", 3.0))
         self.read_chunk_size = int(config.get("read_chunk_size", 4096))
@@ -133,8 +140,12 @@ class WiFiTransport(FlipperTransport):
     async def is_connected(self) -> bool:
         """
         Check if WiFi is connected.
-        
+
         Returns:
             True if connected
         """
         return self.connected and self.writer is not None and not self.writer.is_closing()
+
+    def get_name(self) -> str:
+        """Return a human-readable name for this transport."""
+        return f"WiFi ({self.host}:{self.port})"
