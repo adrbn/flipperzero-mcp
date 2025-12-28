@@ -1,16 +1,16 @@
 /**
- * TCP-UART Bridge for Flipper Zero WiFi Dev Board
+ * Flipper Zero WiFi Bridge with Expansion Module Protocol
  *
- * Main application that bridges TCP socket connections to UART
- * for Flipper Zero Protobuf RPC communication over WiFi.
+ * Connects to Flipper Zero via GPIO UART using the Expansion Module Protocol
+ * to establish Protobuf RPC sessions over WiFi.
  *
  * Flow:
- *   MCP Client <--TCP--> ESP32 <--UART--> Flipper Zero
+ *   HTTP/TCP Client <--WiFi--> ESP32 <--Expansion Protocol--> Flipper Zero
  *
  * Features:
  *   - Web-based captive portal for WiFi configuration
- *   - Stores credentials in NVS (survives reboots)
- *   - Bidirectional TCP<->UART forwarding
+ *   - Expansion Module Protocol for Flipper communication
+ *   - HTTP REST API for remote control
  *   - LED status indication
  */
 
@@ -25,36 +25,39 @@
 
 #include "wifi_manager.h"
 #include "tcp_server.h"
-#include "uart_bridge.h"
+#include "expansion_module.h"
+#include "http_api.h"
 
 static const char *TAG = "main";
 
-/* LED pin for status indication (ESP32-S2 built-in LED varies by board) */
+/* LED pin for status indication */
 #define STATUS_LED_PIN GPIO_NUM_15
 
-/* Statistics */
-static uint32_t s_tcp_to_uart_bytes = 0;
-static uint32_t s_uart_to_tcp_bytes = 0;
+/* UART pins for Flipper connection */
+#define FLIPPER_TX_PIN  43  /* ESP32 TX -> Flipper RX (pin 14) */
+#define FLIPPER_RX_PIN  44  /* ESP32 RX <- Flipper TX (pin 13) */
 
 /**
- * Callback: data received from TCP client -> forward to UART
+ * Callback: RPC data received from Flipper
  */
-static void on_tcp_rx(const uint8_t *data, size_t len) {
-    int sent = uart_bridge_send(data, len);
-    if (sent > 0) {
-        s_tcp_to_uart_bytes += sent;
-        ESP_LOGD(TAG, "TCP->UART: %zu bytes", len);
-    }
+static void on_rpc_rx(const uint8_t *data, size_t len) {
+    ESP_LOGI(TAG, "RPC RX: %d bytes", (int)len);
+
+    /* Forward to TCP client if connected */
+    tcp_server_send(data, len);
+
+    /* TODO: Process RPC responses for HTTP API */
 }
 
 /**
- * Callback: data received from UART -> forward to TCP client
+ * Callback: data received from TCP client -> forward to Flipper RPC
  */
-static void on_uart_rx(const uint8_t *data, size_t len) {
-    int sent = tcp_server_send(data, len);
-    if (sent > 0) {
-        s_uart_to_tcp_bytes += sent;
-        ESP_LOGD(TAG, "UART->TCP: %zu bytes", len);
+static void on_tcp_rx(const uint8_t *data, size_t len) {
+    if (expansion_is_connected()) {
+        expansion_send_rpc(data, len);
+        ESP_LOGD(TAG, "TCP->RPC: %u bytes", (unsigned int)len);
+    } else {
+        ESP_LOGW(TAG, "TCP data received but Flipper not connected");
     }
 }
 
@@ -62,7 +65,6 @@ static void on_uart_rx(const uint8_t *data, size_t len) {
  * LED status task
  */
 static void led_status_task(void *arg) {
-    /* Configure LED pin */
     gpio_reset_pin(STATUS_LED_PIN);
     gpio_set_direction(STATUS_LED_PIN, GPIO_MODE_OUTPUT);
 
@@ -73,8 +75,14 @@ static void led_status_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(100));
             gpio_set_level(STATUS_LED_PIN, 0);
             vTaskDelay(pdMS_TO_TICKS(100));
+        } else if (!expansion_is_connected()) {
+            /* Medium blink: WiFi connected, Flipper not connected */
+            gpio_set_level(STATUS_LED_PIN, 1);
+            vTaskDelay(pdMS_TO_TICKS(300));
+            gpio_set_level(STATUS_LED_PIN, 0);
+            vTaskDelay(pdMS_TO_TICKS(300));
         } else if (!tcp_server_has_client()) {
-            /* Slow blink: WiFi connected, no TCP client */
+            /* Slow blink: Flipper connected, no TCP client */
             gpio_set_level(STATUS_LED_PIN, 1);
             vTaskDelay(pdMS_TO_TICKS(500));
             gpio_set_level(STATUS_LED_PIN, 0);
@@ -88,35 +96,53 @@ static void led_status_task(void *arg) {
 }
 
 /**
- * Stats logging task
+ * Flipper connection task
+ * Attempts to establish and maintain connection with Flipper
  */
-static void stats_task(void *arg) {
-    uint32_t last_tcp_to_uart = 0;
-    uint32_t last_uart_to_tcp = 0;
+static void flipper_connect_task(void *arg) {
+    vTaskDelay(pdMS_TO_TICKS(1000));  /* Wait for system to stabilize */
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(30000)); /* Every 30 seconds */
+        expansion_state_t state = expansion_get_state();
 
-        if (s_tcp_to_uart_bytes != last_tcp_to_uart ||
-            s_uart_to_tcp_bytes != last_uart_to_tcp) {
-            ESP_LOGI(TAG, "Stats: TCP->UART=%lu bytes, UART->TCP=%lu bytes",
-                     (unsigned long)s_tcp_to_uart_bytes,
-                     (unsigned long)s_uart_to_tcp_bytes);
-            last_tcp_to_uart = s_tcp_to_uart_bytes;
-            last_uart_to_tcp = s_uart_to_tcp_bytes;
+        if (state == EXP_STATE_DISCONNECTED || state == EXP_STATE_ERROR) {
+            ESP_LOGI(TAG, "Attempting to connect to Flipper...");
+            expansion_connect();
+
+            /* Wait for connection attempt to complete */
+            for (int i = 0; i < 20; i++) {  /* 2 second timeout */
+                vTaskDelay(pdMS_TO_TICKS(100));
+                state = expansion_get_state();
+                if (state == EXP_STATE_RPC_ACTIVE) {
+                    ESP_LOGI(TAG, "*** Connected to Flipper! RPC session active ***");
+                    break;
+                } else if (state == EXP_STATE_ERROR) {
+                    ESP_LOGW(TAG, "Connection failed, will retry...");
+                    break;
+                }
+            }
+
+            if (state != EXP_STATE_RPC_ACTIVE) {
+                /* Connection timed out or failed, wait before retry */
+                expansion_disconnect();
+                vTaskDelay(pdMS_TO_TICKS(3000));
+            }
+        } else if (state == EXP_STATE_RPC_ACTIVE) {
+            /* Connected, just monitor */
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        } else {
+            /* In progress, wait */
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "Flipper Zero TCP-UART Bridge");
-    ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "TCP Port: %d", CONFIG_BRIDGE_TCP_PORT);
-    ESP_LOGI(TAG, "UART: TX=%d, RX=%d, Baud=%d",
-             CONFIG_BRIDGE_UART_TX_PIN,
-             CONFIG_BRIDGE_UART_RX_PIN,
-             CONFIG_BRIDGE_UART_BAUD_RATE);
+    ESP_LOGI(TAG, "==========================================");
+    ESP_LOGI(TAG, "Flipper Zero WiFi Bridge (Expansion Mode)");
+    ESP_LOGI(TAG, "==========================================");
+    ESP_LOGI(TAG, "UART: TX=%d -> Flipper RX, RX=%d <- Flipper TX",
+             FLIPPER_TX_PIN, FLIPPER_RX_PIN);
 
     /* Start LED status task */
     xTaskCreate(led_status_task, "led_status", 2048, NULL, 1, NULL);
@@ -139,40 +165,55 @@ void app_main(void) {
     wifi_manager_get_ip(ip_str, sizeof(ip_str));
     ESP_LOGI(TAG, "WiFi connected! IP: %s", ip_str);
 
-    /* Initialize UART bridge */
-    ESP_LOGI(TAG, "Initializing UART bridge...");
-    err = uart_bridge_init(CONFIG_BRIDGE_UART_TX_PIN,
-                           CONFIG_BRIDGE_UART_RX_PIN,
-                           CONFIG_BRIDGE_UART_BAUD_RATE,
-                           on_uart_rx);
+    /* Initialize Expansion Module protocol */
+    ESP_LOGI(TAG, "Initializing Flipper Expansion Module...");
+    err = expansion_init(FLIPPER_TX_PIN, FLIPPER_RX_PIN, on_rpc_rx);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "UART init failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Expansion init failed: %s", esp_err_to_name(err));
         return;
     }
 
-    /* Initialize TCP server */
-    ESP_LOGI(TAG, "Starting TCP server on port %d...", CONFIG_BRIDGE_TCP_PORT);
-    err = tcp_server_init(CONFIG_BRIDGE_TCP_PORT, on_tcp_rx);
+    /* Initialize TCP server (for raw Protobuf RPC forwarding) */
+    ESP_LOGI(TAG, "Starting TCP server on port 8080...");
+    err = tcp_server_init(8080, on_tcp_rx);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "TCP server init failed: %s", esp_err_to_name(err));
         return;
     }
 
-    ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "Bridge ready!");
-    ESP_LOGI(TAG, "Connect to: %s:%d", ip_str, CONFIG_BRIDGE_TCP_PORT);
-    ESP_LOGI(TAG, "=================================");
+    /* Initialize HTTP API server */
+    ESP_LOGI(TAG, "Starting HTTP API on port 80...");
+    err = http_api_init(80);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP API init failed: %s", esp_err_to_name(err));
+        return;
+    }
 
-    /* Start stats task */
-    xTaskCreate(stats_task, "stats", 2048, NULL, 1, NULL);
+    ESP_LOGI(TAG, "==========================================");
+    ESP_LOGI(TAG, "Bridge ready!");
+    ESP_LOGI(TAG, "HTTP: http://%s/api/health", ip_str);
+    ESP_LOGI(TAG, "TCP:  %s:8080 (Protobuf RPC)", ip_str);
+    ESP_LOGI(TAG, "==========================================");
+    ESP_LOGI(TAG, "Make sure Flipper has Expansion Modules enabled!");
+    ESP_LOGI(TAG, "  Settings -> Expansion Modules -> USART");
+    ESP_LOGI(TAG, "==========================================");
+
+    /* Start Flipper connection task */
+    xTaskCreate(flipper_connect_task, "flipper_conn", 4096, NULL, 5, NULL);
 
     /* Main loop - just keep running */
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
 
-        /* Check WiFi connection and reconnect if needed */
         if (!wifi_manager_is_connected()) {
-            ESP_LOGW(TAG, "WiFi connection lost, manager will reconnect...");
+            ESP_LOGW(TAG, "WiFi connection lost...");
+        }
+
+        if (expansion_is_connected()) {
+            ESP_LOGI(TAG, "Status: Flipper connected, RPC active");
+        } else {
+            ESP_LOGI(TAG, "Status: Flipper not connected (state=%d)",
+                     expansion_get_state());
         }
     }
 }

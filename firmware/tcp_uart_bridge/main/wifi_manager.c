@@ -6,13 +6,16 @@
 
 #include "wifi_manager.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "esp_wifi_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -52,9 +55,9 @@ static const char CAPTIVE_PORTAL_HTML[] =
     "body{font-family:sans-serif;margin:20px;background:#1a1a2e;color:#eee;}"
     "h1{color:#ff8c00;}"
     ".container{max-width:400px;margin:0 auto;}"
-    "input,select{width:100%%;padding:12px;margin:8px 0;box-sizing:border-box;"
+    "input,select{width:100%;padding:12px;margin:8px 0;box-sizing:border-box;"
     "border:1px solid #444;border-radius:4px;background:#2a2a4e;color:#eee;}"
-    "button{width:100%%;padding:14px;background:#ff8c00;color:#fff;border:none;"
+    "button{width:100%;padding:14px;background:#ff8c00;color:#fff;border:none;"
     "border-radius:4px;cursor:pointer;font-size:16px;margin-top:10px;}"
     "button:hover{background:#e67e00;}"
     ".status{padding:10px;margin:10px 0;border-radius:4px;}"
@@ -119,6 +122,25 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 static esp_err_t start_captive_portal(void);
 static void stop_captive_portal(void);
 
+/* URL decode helper - decodes %XX and + to original characters */
+static void url_decode(char *dst, const char *src, size_t dst_size) {
+    size_t di = 0;
+    size_t si = 0;
+    while (src[si] && di < dst_size - 1) {
+        if (src[si] == '%' && src[si + 1] && src[si + 2]) {
+            char hex[3] = {src[si + 1], src[si + 2], 0};
+            dst[di++] = (char)strtol(hex, NULL, 16);
+            si += 3;
+        } else if (src[si] == '+') {
+            dst[di++] = ' ';
+            si++;
+        } else {
+            dst[di++] = src[si++];
+        }
+    }
+    dst[di] = '\0';
+}
+
 /* Load credentials from NVS */
 static esp_err_t load_credentials(char *ssid, size_t ssid_len,
                                    char *password, size_t pass_len) {
@@ -126,13 +148,15 @@ static esp_err_t load_credentials(char *ssid, size_t ssid_len,
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
     if (err != ESP_OK) return err;
 
-    err = nvs_get_str(nvs, NVS_KEY_SSID, ssid, &ssid_len);
+    size_t len = ssid_len;
+    err = nvs_get_str(nvs, NVS_KEY_SSID, ssid, &len);
     if (err != ESP_OK) {
         nvs_close(nvs);
         return err;
     }
 
-    err = nvs_get_str(nvs, NVS_KEY_PASS, password, &pass_len);
+    len = pass_len;
+    err = nvs_get_str(nvs, NVS_KEY_PASS, password, &len);
     nvs_close(nvs);
     return err;
 }
@@ -161,34 +185,23 @@ static esp_err_t save_credentials(const char *ssid, const char *password) {
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT) {
-        switch (event_id) {
-            case WIFI_EVENT_STA_START:
+        if (event_id == WIFI_EVENT_STA_START) {
+            esp_wifi_connect();
+        } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+            s_is_connected = false;
+            if (s_retry_num < MAX_RETRY_COUNT) {
                 esp_wifi_connect();
-                break;
-            case WIFI_EVENT_STA_DISCONNECTED:
-                s_is_connected = false;
-                if (s_retry_num < MAX_RETRY_COUNT) {
-                    esp_wifi_connect();
-                    s_retry_num++;
-                    ESP_LOGI(TAG, "Retrying connection (%d/%d)", s_retry_num,
-                             MAX_RETRY_COUNT);
-                } else {
-                    xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-                    ESP_LOGI(TAG, "Connection failed, starting captive portal");
-                }
-                break;
-            case WIFI_EVENT_AP_STACONNECTED: {
-                wifi_event_ap_staconnected_t *event =
-                    (wifi_event_ap_staconnected_t *)event_data;
-                ESP_LOGI(TAG, "Station " MACSTR " joined AP", MAC2STR(event->mac));
-                break;
+                s_retry_num++;
+                ESP_LOGI(TAG, "Retrying connection (%d/%d)", s_retry_num,
+                         MAX_RETRY_COUNT);
+            } else {
+                xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+                ESP_LOGI(TAG, "Connection failed, starting captive portal");
             }
-            case WIFI_EVENT_AP_STADISCONNECTED: {
-                wifi_event_ap_stadisconnected_t *event =
-                    (wifi_event_ap_stadisconnected_t *)event_data;
-                ESP_LOGI(TAG, "Station " MACSTR " left AP", MAC2STR(event->mac));
-                break;
-            }
+        } else if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+            ESP_LOGI(TAG, "Station joined AP");
+        } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+            ESP_LOGI(TAG, "Station left AP");
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
@@ -243,6 +256,7 @@ static esp_err_t http_connect_handler(httpd_req_t *req) {
     /* Parse SSID and password from form data */
     char ssid[33] = {0};
     char password[65] = {0};
+    char temp[128] = {0};
 
     char *ssid_start = strstr(buf, "ssid=");
     char *pass_start = strstr(buf, "password=");
@@ -251,16 +265,20 @@ static esp_err_t http_connect_handler(httpd_req_t *req) {
         ssid_start += 5;
         char *ssid_end = strchr(ssid_start, '&');
         size_t len = ssid_end ? (size_t)(ssid_end - ssid_start) : strlen(ssid_start);
-        if (len > 32) len = 32;
-        strncpy(ssid, ssid_start, len);
+        if (len > sizeof(temp) - 1) len = sizeof(temp) - 1;
+        strncpy(temp, ssid_start, len);
+        temp[len] = '\0';
+        url_decode(ssid, temp, sizeof(ssid));
     }
 
     if (pass_start) {
         pass_start += 9;
         char *pass_end = strchr(pass_start, '&');
         size_t len = pass_end ? (size_t)(pass_end - pass_start) : strlen(pass_start);
-        if (len > 64) len = 64;
-        strncpy(password, pass_start, len);
+        if (len > sizeof(temp) - 1) len = sizeof(temp) - 1;
+        strncpy(temp, pass_start, len);
+        temp[len] = '\0';
+        url_decode(password, temp, sizeof(password));
     }
 
     if (strlen(ssid) == 0) {

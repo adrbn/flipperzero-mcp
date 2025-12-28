@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <errno.h>
@@ -194,7 +195,7 @@ int tcp_server_send(const uint8_t *data, size_t len) {
     xSemaphoreGive(s_client_mutex);
 
     if (sock < 0) {
-        ESP_LOGD(TAG, "No client connected, dropping %zu bytes", len);
+        ESP_LOGD(TAG, "No client connected, dropping %u bytes", (unsigned int)len);
         return -1;
     }
 
