@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from .transport.base import FlipperTransport
 from .rpc import FlipperRPC
+from .cli_bridge import CLIBridge
 
 
 class FlipperStorage:
@@ -156,9 +157,10 @@ class FlipperClient:
         # transport state and protobuf RPC responsiveness.
         self.connected = False
         self.rpc: Optional[FlipperRPC] = None
+        self.cli: Optional[CLIBridge] = None
         self.stub_mode: bool = False
         self.last_connection_error: Optional[str] = None
-        
+
         # Sub-clients
         self.storage = FlipperStorage(self)
         self.app = FlipperApp(self)
@@ -184,6 +186,16 @@ class FlipperClient:
         
         # Initialize RPC client
         self.rpc = FlipperRPC(self.transport)
+
+        # Initialize CLI bridge (needs the protobuf RPC instance to flip modes)
+        try:
+            if hasattr(self.rpc, "_ensure_protobuf_rpc"):
+                self.rpc._ensure_protobuf_rpc()
+            pb_rpc = getattr(self.rpc, "protobuf_rpc", None)
+            if pb_rpc is not None:
+                self.cli = CLIBridge(self.transport, pb_rpc)
+        except Exception:
+            self.cli = None
 
         # NOTE:
         # Do not send any ad-hoc/binary "ping" bytes on connect.
