@@ -8,6 +8,16 @@ from .rpc import FlipperRPC
 from .cli_bridge import CLIBridge
 
 
+def _strip_storage_read_header(cli_output: str) -> str:
+    """Drop the `Size: N` header the Flipper CLI prepends to `storage read`."""
+    if not cli_output:
+        return ""
+    lines = cli_output.splitlines()
+    if lines and lines[0].lstrip().lower().startswith("size:"):
+        lines = lines[1:]
+    return "\n".join(lines).strip("\r\n")
+
+
 class FlipperStorage:
     """
     Storage operations wrapper.
@@ -35,16 +45,34 @@ class FlipperStorage:
     async def read(self, path: str) -> str:
         """
         Read file contents.
-        
+
+        Tries protobuf storage_read first; falls back to the CLI
+        `storage read` command when available. The CLI fallback covers
+        firmwares where storage_read responses arrive in chunks or
+        with empty data fields the protobuf path doesn't reassemble.
+
         Args:
             path: File path
-            
+
         Returns:
-            File contents as string
+            File contents as string, or "" if unreadable.
         """
-        if not self.client.rpc:
+        if self.client.rpc:
+            try:
+                via_rpc = await self.client.rpc.storage_read(path)
+                if via_rpc:
+                    return via_rpc
+            except Exception:
+                pass
+
+        cli = getattr(self.client, "cli", None)
+        if cli is None:
             return ""
-        return await self.client.rpc.storage_read(path)
+        try:
+            out = await cli.send_command(f'storage read "{path}"', timeout=5.0)
+        except Exception:
+            return ""
+        return _strip_storage_read_header(out)
     
     async def write(self, path: str, content: str) -> bool:
         """
